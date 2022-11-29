@@ -87,7 +87,7 @@ void populate_ina_array(ina *inas) {
 	d = opendir("/sys/class/hwmon/");
 	int counter = 0;
 
-	while ((dir = readdir(d)) != NULL) {    //there should be 0-19 in zcu102 so 20 ina are initialized
+	while ((dir = readdir(d)) != NULL) {    //there should be 0-17 in zcu102 so 18 ina are initialized
 		if (strncmp(".", dir->d_name, 1) == 0) {
 			continue; // . entry
 		}
@@ -100,12 +100,12 @@ void populate_ina_array(ina *inas) {
 		///sys/class/hwmonx/name   (INA226 should be)
 		fptr = fopen(fname_buff, "r");
 		fread(&buffer, 10, 1, fptr);   //buffer = "INA226"
-		//printf("device type: %s", buffer);
+		//printf("device type: %s \n", buffer);
 
 		if (strncmp(buffer, "ina", 3) == 0) {
 			fname_buff[strlen(fname_buff)-5] = 0;
-			printf("changed fname : %s \n", fname_buff);
-			printf("it is round %d, and the file is no. %c%c", counter, dir->d_name[5], dir->d_name[6]);
+			//printf("changed fname : %s \n", fname_buff);
+			//printf("it is round %d, and the file is no. %c%c \n", counter, dir->d_name[5], dir->d_name[6]);
 
 			strcpy(inas[counter].current_path,fname_buff);
 			strcat(inas[counter].current_path,"/curr1_input"); // /sys/class/hwmonx/curr1_input current path
@@ -120,12 +120,13 @@ void populate_ina_array(ina *inas) {
 
 	}
 
-	printf("unsorted inas: \n");
-	for(int ii = 0; ii<counter; ii++) {
-		printf("%s ;", inas[ii].current_path);
-	}
-	printf("\n");
+	//printf("couter is %d\n", counter);
 	qsort(inas, counter, sizeof(ina), cmp_ina);
+
+	printf("---------sorted inas:---------- \n");
+	for(int ii = 0; ii<counter; ii++) {
+		printf("%s \n", inas[ii].current_path);
+	}
 
 	if (counter > 0)
 		inas[counter-1].last = 1;
@@ -155,10 +156,11 @@ void list_inas (ina *inas) {
 	return;
 }
 
-void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, int display, ina *inas) {
+void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, int display, int seq_num, ina *inas) {
 	FILE *sav_ptr;
 	FILE *ina_ptr;
 	FILE *res_ptr;
+	FILE *seq_ptr;
 
 	sav_ptr = fopen(target_file, "w");
 
@@ -167,8 +169,15 @@ void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, i
 	float pspower = 0;
 	float mgtpower = 0;
 	float total_power = 0;
+	float *total_seq;
+
+	total_seq = (float *)malloc(seq_num*sizeof(float));
+	for(int jj = 0; jj < seq_num; jj++) {
+		total_seq[jj] = 0;
+	}
 
 	int counter = 0;
+	int avg_cnt = 0;
 	while(1) {
 		if (verbose == 1) {
 			fprintf(sav_ptr, "%s mV,%s mA,", inas[counter].name, inas[counter].name);
@@ -185,7 +194,7 @@ void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, i
 
 	for (int j = 0; j < iterations; j++) {
 		counter = 0;
-		while(1) {
+		while(1) {	//loop 18 rails
 
 			ina_ptr = fopen(inas[counter].voltage_path, "r");
 
@@ -208,9 +217,6 @@ void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, i
 				printf("Current # %d = %d \n", counter, atoi(buffer));
 				fprintf(sav_ptr, "%s,", buffer);
 			}
-
-
-
 
 			if(inas[counter].last) {
 				if(verbose==1){
@@ -263,17 +269,25 @@ void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, i
 					printf(" %.3f\n", mgtpower+plpower+pspower);
 				}
 
-				if((j+1)%11 != 0) {
+				if((j+1)%10 != 0) {
 					total_power = total_power + mgtpower + plpower + pspower;
 				} else {
-					res_ptr = fopen("/home/root/pwr_res/total_power.txt", 'w');
-					fprintf(res_ptr,"%f", total_power);
+					res_ptr = fopen("/home/root/pwr_res/power_avg.txt", "a");
+					printf("No. %d: update the average power: %f \n", avg_cnt, total_power/10);
+					fprintf(res_ptr, "avg%d:%f\n", avg_cnt, total_power/10);
 					total_power = 0;
 					fclose(res_ptr);
+					avg_cnt = avg_cnt + 1;
 				}
 
-				fprintf(sav_ptr, "\n");
+				total_seq[j%seq_num] = mgtpower + plpower + pspower;
+				seq_ptr = fopen("/home/root/pwr_res/power_seq.txt", "w");
+				for(int jj = 0; jj < seq_num; jj++) {
+					fprintf(seq_ptr, "%f\n", total_seq[jj]);
+				}
+				fclose(seq_ptr);
 
+				fprintf(sav_ptr, "\n");
 				fclose(ina_ptr);
 				break;
 			}
@@ -284,7 +298,7 @@ void run_bm (char target_file[50], int sleep_per, int iterations, int verbose, i
 
 		}
 
-		sleep(sleep_per);
+		usleep(sleep_per);
 	}
 	fclose(sav_ptr);
 }
@@ -295,8 +309,8 @@ int main(int argc, char *argv[]) {
 	populate_ina_array(inas);
 
 	int opt;
-	int sleep_per = 1;
-	int iterations = 20;
+	int sleep_per = 100000;
+	int iterations = 100;
 	int verbose = 0;
 	int display = 0;
 	char target_file[50] = "./out.txt";
@@ -330,7 +344,8 @@ int main(int argc, char *argv[]) {
 				break;
 		}
 	}
-	run_bm(target_file, sleep_per, iterations, verbose, display, inas);
+	printf("----START RUN MEASUREMENT----\n");
+	run_bm(target_file, sleep_per, iterations, verbose, display, 10, inas);
 
 	return 0;
 }
